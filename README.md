@@ -1,4 +1,4 @@
-# Added som things that I needed:
+# Added some things that I needed:
 
 * MQTT messaging (probes and online/offline)
 * JSON output
