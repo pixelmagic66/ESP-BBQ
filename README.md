@@ -3,7 +3,9 @@
 * MQTT messaging (probes and online/offline)
 * JSON output
 * Shutdown button to signal offline on MQTT
+* STL files for 3d printing a housing
 
+![Screenshot_1](https://github.com/pixelmagic66/ESP-BBQ/blob/main/BBq-Monitor.png)
 
 # ESP-BBQ
 This contains all files for an ESP32 based WiFi BBQ thermometer.
