@@ -1,3 +1,10 @@
+# Added som things that I needed:
+
+* MQTT messaging (probes and online/offline)
+* JSON output
+* Shutdown button to signal offline on MQTT
+
+
 # ESP-BBQ
 This contains all files for an ESP32 based WiFi BBQ thermometer.
 
