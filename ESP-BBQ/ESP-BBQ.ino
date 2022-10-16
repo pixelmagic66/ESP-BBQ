@@ -1,5 +1,19 @@
+// Original code and PCB design by KMelsen - https://github.com/KMelsen/ESP-BBQ
+// 
+// Adapted by PixelMagic 2022
+//
+// I used the FireBeetle32 as board
+//
+// Please define your WiFi and MQTT credentials
+// MQTT topic will be bbqtemp/probeX
+//
+// JSON output is available at http://yourip/json 
+//
+// Holding down the GPIO/BOOT button for 5 seconds will signal a Offline message
+
 // Include libraries
 #include <WiFi.h>
+#include <PubSubClient.h>
 #include <ESPAsyncWebServer.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -17,12 +31,27 @@ Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, 
 const int samples = 50;
 
 // Define input channels
-#define CH0_INPUT 33
+#define CH0_INPUT 33 // probes
 #define CH1_INPUT 32
 #define CH2_INPUT 35
 #define CH3_INPUT 34
 #define CH4_INPUT 39
-#define CH5_INPUT 36
+#define CH5_INPUT 36 // probes
+#define BTN_STOP 0
+
+// WiFi information
+const char* ssid = "Wifiname";
+const char* password = "WifiPassword;
+
+// MQTT Broker
+const char *mqtt_broker = "broker_address";
+const char *mqtt_username = "MQTT-username";
+const char *mqtt_password = "MQTT-password";
+const int mqtt_port = 1883;
+
+// deep sleep
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  0        /* Time ESP32 will go to sleep (in seconds) */
 
 // Define resistor and steinhart values
 float RESISTOR = 99700;
@@ -32,6 +61,7 @@ float STEINHART_C = 0.3546777196e-7;
 
 // String temperature variables
 String cal_temp_ch0_F = "";
+String cal_temp_ch0_C = "";
 String cal_temp_ch1_F = "";
 String cal_temp_ch2_F = "";
 String cal_temp_ch3_F = "";
@@ -106,10 +136,11 @@ const unsigned char splash_bitmap [] PROGMEM = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-// WiFi information.
-const char* ssid = "Replace with SSID";
-const char* password = "Replace with password";
+
 AsyncWebServer server(80);
+
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
 
 // Functions
 double analogReadAverage(int channel_pin) {
@@ -150,7 +181,7 @@ String calTempF(int channel_pin) {
     return String(cal_temp_F);
   } else {
     String cal_temp_F = String(round(cal_temp_C * 9 / 5 + 32));
-    return String(cal_temp_F);
+    return String(cal_temp_C);
   }
 }
 
@@ -168,40 +199,41 @@ const char index_html[] PROGMEM = R"rawliteral(
      text-align: center;
     }
   </style>
+  <title>ESP32 Boretti Kamado temperatuur</title>
 </head>
 <body>
-  <h1>Smoker Temperature</h1>
+  <h1>ESP32 Boretti Kamado temperatuur</h1>
   <table style="width: 80.1867; border-collapse: collapse; margin-left: auto; margin-right: auto;" border="0">
   <tbody>
     <tr>
     <td><strong>Channel 0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch0tempf" style="text-align:right;">%CH0TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
     <tr>
     <td><strong>Channel 1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch1tempf" style="text-align:right;">%CH1TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
     <tr>
     <td><strong>Channel 2&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch2tempf" style="text-align:right;">%CH2TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
     <tr>
     <td><strong>Channel 3&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch3tempf" style="text-align:right;">%CH3TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
     <tr>
     <td><strong>Channel 4&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch4tempf" style="text-align:right;">%CH4TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
     <tr>
     <td><strong>Channel 5&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong></td>
     <td id="ch5tempf" style="text-align:right;">%CH5TEMPF%</td>
-    <td>&nbsp;&nbsp;&deg;F</td>
+    <td>&nbsp;&nbsp;&deg;C</td>
     </tr>
   </tbody>
   </table>
@@ -216,7 +248,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch0tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -226,7 +258,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch1tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -236,7 +268,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch2tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -246,7 +278,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch3tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -256,7 +288,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch4tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -266,7 +298,7 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/ch5tempf", true);
   xhttp.send();
-}, 1000) ;
+}, 10000) ;
 </script>
 </html>)rawliteral";
 
@@ -297,6 +329,7 @@ String processor(const String& var){
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  // setup display
   analogSetAttenuation(ADC_11db);
   display.begin(I2C_ADDRESS, true);
   delay(1000);
@@ -308,6 +341,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(0, 0);
+  // setup WiFi
   WiFi.begin(ssid, password);
   Serial.println("Connecting to WiFi");
   display.println("Connecting to WiFi");
@@ -327,6 +361,24 @@ void setup() {
   display.println(WiFi.localIP());
   display.display();
   delay(3000);
+  // setup MQTT
+  mqtt.setServer(mqtt_broker, mqtt_port);
+  while (!mqtt.connected()) {
+    String mqtt_id = "esp32-client-";
+    mqtt_id += String(WiFi.macAddress());
+    Serial.printf("The client %s connects to the public mqtt broker\n", mqtt_id.c_str());
+    if (mqtt.connect(mqtt_id.c_str(), mqtt_username, mqtt_password)) {
+        Serial.println("Public mqtt broker connected");
+        display.println("MQTT Connected");
+        display.display();
+        mqtt.publish("bbqtemp/status", "Online");
+    } else {
+        Serial.print("failed with state ");
+        Serial.print(mqtt.state());
+        delay(2000);
+    }
+    
+  } 
 
   // Route for root / web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -350,12 +402,40 @@ void setup() {
   server.on("/ch5tempf", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/plain", calTempF(CH5_INPUT).c_str());
   });
-  
+  // json output
+  server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "[";
+        json += "{";
+        json +=  "\"probe0\":\""+calTempF(CH0_INPUT)+"\"";
+        json += ",\"probe1\":\""+calTempF(CH1_INPUT)+"\"";
+        json += ",\"probe2\":\""+calTempF(CH2_INPUT)+"\"";
+        json += ",\"probe3\":\""+calTempF(CH3_INPUT)+"\"";
+        json += ",\"probe4\":\""+calTempF(CH4_INPUT)+"\"";
+        json += ",\"probe5\":\""+calTempF(CH5_INPUT)+"\"";
+        json += "}";     
+    json += "]";
+    request->send(200, "application/json", json);
+    json = String();
+  });
+  pinMode(BTN_STOP,INPUT_PULLUP);
   // Start server
   server.begin();
 }
 
 void loop() {
+  // check if button is pressed
+  
+     if(!digitalRead(BTN_STOP)){
+        Serial.println("Offline signaled");
+        mqtt.publish("bbqtemp/status", "Offline" );
+        display.clearDisplay();   
+        display.setCursor(0, 1);   
+        display.println("Shutdown completed");
+        display.display();
+        delay(1000);
+        esp_deep_sleep_start();
+    }   
+    
   // Clear display and set cursor for printing data
   display.clearDisplay();
   display.setCursor(0, 1);
@@ -403,43 +483,67 @@ void loop() {
   String cal_temp_ch_4_F = calTempF(CH4_INPUT);
   String cal_temp_ch_5_F = calTempF(CH5_INPUT);
   
-  // Print temperature on OLED display
+  // Print temperature on OLED display and publish to MQTT
   if (cal_temp_ch_0 < -200) {
     display.println("Ch 0: No probe");
+    mqtt.publish("bbqtemp/probe0", "No Probe" ); 
   } else {
-    display.println((String) "Ch 0: " + cal_temp_ch_0 + " C  " + cal_temp_ch_0_F_OLED + " F");
+    display.println((String) "Ch 0: " + cal_temp_ch_0 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_0, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe0", charTemperature );        
   }
   display.setCursor(0, 12);
   if (cal_temp_ch_1 < -200) {
     display.println("Ch 1: No probe");
+    mqtt.publish("bbqtemp/probe1", "No Probe" ); 
   } else {
-    display.println((String) "Ch 1: " + cal_temp_ch_1 + " C  " + cal_temp_ch_1_F_OLED + " F");
+    display.println((String) "Ch 1: " + cal_temp_ch_1 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_1, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe1", charTemperature );      
   }
   display.setCursor(0, 23);
   if (cal_temp_ch_2 < -200) {
     display.println("Ch 2: No probe");
+    mqtt.publish("bbqtemp/probe2", "No Probe" ); 
   } else {
-    display.println((String) "Ch 2: " + cal_temp_ch_2 + " C  " + cal_temp_ch_2_F_OLED + " F");
+    display.println((String) "Ch 2: " + cal_temp_ch_2 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_2, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe2", charTemperature );      
   }
   display.setCursor(0, 34);
   if (cal_temp_ch_3 < -200) {
     display.println("Ch 3: No probe");
+    mqtt.publish("bbqtemp/probe3", "No Probe" ); 
   } else {
-    display.println((String) "Ch 3: " + cal_temp_ch_3 + " C  " + cal_temp_ch_3_F_OLED + " F");
+    display.println((String) "Ch 3: " + cal_temp_ch_3 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_3, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe3", charTemperature );      
   }
   display.setCursor(0, 45);
   if (cal_temp_ch_4 < -200) {
     display.println("Ch 4: No probe");
+    mqtt.publish("bbqtemp/probe4", "No Probe" ); 
   } else {
-    display.println((String) "Ch 4: " + cal_temp_ch_4 + " C  " + cal_temp_ch_4_F_OLED + " F");
+    display.println((String) "Ch 4: " + cal_temp_ch_4 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_4, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe4", charTemperature );      
   }
   display.setCursor(0, 56);
   if (cal_temp_ch_5 < -200) {
     display.println("Ch 5: No probe");
+    mqtt.publish("bbqtemp/probe5", "No Probe" );     
   } else {
-    display.println((String) "Ch 5: " + cal_temp_ch_5 + " C  " + cal_temp_ch_5_F_OLED + " F");
+    display.println((String) "Ch 5: " + cal_temp_ch_5 + " C  ");
+    char charTemperature[] = "00.0";
+    dtostrf(cal_temp_ch_5, 4, 1, charTemperature);
+    mqtt.publish("bbqtemp/probe5", charTemperature );      
   }
   display.display();
-  
-  delay(1000);
+  // wait a little bit
+  delay(5000);
 }
